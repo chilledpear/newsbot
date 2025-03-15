@@ -1182,20 +1182,45 @@ async def graceful_shutdown():
     print("Initiating graceful shutdown...")
     await asyncio.sleep(2)
     
-    # Get the event loop
-    loop = asyncio.get_running_loop()
-    
-    # Cancel all tasks except the current one
-    tasks = [t for t in asyncio.all_tasks() if t is not asyncio.current_task()]
-    for task in tasks:
-        task.cancel()
-    
-    # Wait for all tasks to be cancelled
-    if tasks:
-        await asyncio.gather(*tasks, return_exceptions=True)
+    try:
+        # Get the event loop
+        loop = asyncio.get_running_loop()
+        
+        # Cancel all tasks except the current one
+        tasks = [t for t in asyncio.all_tasks() if t is not asyncio.current_task()]
+        
+        # Log number of tasks being canceled
+        print(f"Canceling {len(tasks)} running tasks...")
+        
+        # First attempt to cancel tasks gracefully
+        for task in tasks:
+            task.cancel()
+        
+        # Wait for all tasks to be cancelled with timeout
+        if tasks:
+            try:
+                # Set a timeout to avoid hanging indefinitely
+                await asyncio.wait(tasks, timeout=5, return_when=asyncio.ALL_COMPLETED)
+            except asyncio.CancelledError:
+                # This is expected during cancellation
+                pass
+            except Exception as e:
+                print(f"Error during task cancellation: {e}")
+        
+        print("Shutdown completed successfully.")
+        
+    except Exception as e:
+        print(f"Error during shutdown: {e}")
     
     # Stop the event loop
-    loop.stop()
+    try:
+        loop = asyncio.get_running_loop()
+        loop.stop()
+    except Exception as e:
+        print(f"Error stopping event loop: {e}")
+        # Last resort is to exit the process
+        import sys
+        sys.exit(0)
 
 ###########################################
 # Command Handlers
@@ -1278,7 +1303,7 @@ async def stop_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if "timeout_job" in context.chat_data:
         context.chat_data.pop("timeout_job").schedule_removal()
     
-    # Schedule a graceful shutdown
+    # Schedule a graceful shutdown after this handler completes
     asyncio.create_task(graceful_shutdown())
 
 async def favorite_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1389,8 +1414,15 @@ def main():
     # Start the bot
     print("News Bot started")
     
-    # Override default error handler to handle SystemExit correctly
-    app.add_error_handler(lambda update, context: None)
+    # Improved error handler to suppress all errors during shutdown
+    def error_handler(update, context):
+        if SHUTDOWN_FLAG:
+            # Suppress errors during shutdown
+            return
+        # For other errors, log them
+        print(f"Error occurred: {context.error}")
+    
+    app.add_error_handler(error_handler)
     
     app.run_polling()
 
