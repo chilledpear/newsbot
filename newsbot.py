@@ -41,9 +41,14 @@ SEND_DELAY = 2
 MAX_SEND_ATTEMPTS = 3
 DEBUG_MODE = True
 SHUTDOWN_FLAG = False  # Flag to signal graceful shutdown
+APP_INSTANCE = None  # Store the application instance globally
+USED_KEYWORDS = {}  # Dictionary to track used keywords by topic, keyed by topic
 
 # Track domains that are consistently access-restricted
 ACCESS_RESTRICTED_DOMAINS = {}
+
+# Create a global set to track all processed URLs
+PROCESSED_URLS = set()
 
 # User agents
 DESKTOP_USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
@@ -200,6 +205,48 @@ def parse_json(text: str) -> dict:
         print(f"Could not parse JSON from: {clean_text[:100]}...")
         return {}
 
+def write_approved_articles_to_file(filename="approved_articles.txt"):
+    """
+    Write all approved articles to a text file for manual review.
+    This helps identify false positives in the article approval process.
+    
+    Args:
+        filename (str): The name of the output file
+    """
+    approved_articles = [article for article in ARTICLE_STATS['articles'] 
+                        if article.get('status') == 'APPROVED']
+    
+    if not approved_articles:
+        print(f"No approved articles to write to {filename}")
+        return
+    
+    with open(filename, 'w', encoding='utf-8') as f:
+        f.write("# Approved Articles Analysis\n\n")
+        f.write("This file contains details of all articles that were approved by the news bot's evaluation system.\n")
+        f.write("Use this to identify and correct false positives in the article selection process.\n\n")
+        
+        f.write("## Approved Articles\n\n")
+        for i, article in enumerate(approved_articles, 1):
+            f.write(f"### Article {i}\n")
+            f.write(f"**Title**: {article.get('title', '')}\n")
+            f.write(f"**Source**: {article.get('source', '')}\n")
+            f.write(f"**Date**: {article.get('date', '')}\n")
+            f.write(f"**URL**: {article.get('url', '')}\n")
+            f.write(f"**Search Query**: {article.get('query', '')}\n\n")
+            
+            f.write("**Viral Metrics**:\n")
+            f.write(f"- Query Match Score: {article.get('query_match', 'N/A')}/5\n")
+            f.write(f"- Specificness Score: {article.get('specificness', 'N/A')}/5\n")
+            f.write(f"- Substantiveness: {article.get('substantiveness', 'N/A')}/5\n")
+            f.write(f"- Uniqueness: {article.get('uniqueness', 'N/A')}/5\n")
+            f.write(f"- Front Page Score: {article.get('score', 'N/A')}/5\n")
+            f.write(f"- Viral Potential: {article.get('viral_potential', 'N/A')}/5\n\n")
+            
+            f.write(f"**Approval Reasoning**: {article.get('reason', '')}\n\n")
+            f.write("---\n\n")
+            
+    print(f"✅ Successfully wrote {len(approved_articles)} approved articles to {filename}")
+
 ###########################################
 # API Interaction Functions
 ###########################################
@@ -285,6 +332,7 @@ async def search_news(query: str, max_results: int = 30, timelimit: str = "d") -
                     "description": result.get("body", ""),
                     "source": result.get("source", ""),
                     "date": result.get("date", ""),
+                    "query": query_text,  # Store the original search query
                     "_id": get_cache_key(f"{result.get('url', '')}:{result.get('title', '')}")
                 })
                 
@@ -632,22 +680,29 @@ async def try_fetch_with_url(url):
 
 @handle_errors
 async def generate_keywords_batch(topic, existing_keywords=None):
-    """Generate search keywords using a single GPT call"""
+    """Generate search keywords using a single GPT call with improved frontpage understanding"""
     context = ""
     if existing_keywords:
         context = f"I've already used these keywords: {', '.join(existing_keywords)}. "
     
     current_year = datetime.now().year
-    prompt = f"""{context}Generate 5 unique search queries for finding current front-page worthy news about '{topic}' in {current_year}.
+    prompt = f"""{context}Generate 5 colloqial search queries for finding breakingnews about '{topic}' that would be PERFECT for the front page of a viral content site like Buzzfeed, Twitter, New York Post,or TMZ.
+
+The queries should target content that is:
+- Highly shareable and viral-worthy
+- Emotional, surprising, controversial, or inspiring
+
 Return ONLY the queries as a simple comma-separated list without numbering, quotes, or formatting."""
     
-    system_role = "You generate concise search queries to find trending news. Keep responses short and to the point."
+    system_role = """You are an expert at identifying only the most viral, and the most shareable content. 
+    You understand what makes headlines go viral, what content performs well on social media, and you filter out everything that does not make the cut.
+    You create search queries that find exactly this type of content - emotional, surprising, trendy, and shareable."""
     
     response = await ask_openai(prompt, system_role, temperature=0.7)
     debug_log(f"Raw OpenAI response for keywords: {response}")
     
     if response == "OPENAI_ERROR":
-        return [f"{topic} news", f"latest {topic}", f"breaking {topic}"]
+        return [f"viral {topic} news", f"shocking {topic} revealed", f"must-see {topic} trends"]
     
     # Parse keywords from the response
     keywords = []
@@ -659,7 +714,6 @@ Return ONLY the queries as a simple comma-separated list without numbering, quot
         # Handle numbered list or line-by-line format
         lines = [line.strip() for line in response.split('\n')]
         for line in lines:
-            # Fixed regex pattern to avoid syntax error
             cleaned = re.sub(r'^\d+[\.\)]\s*|^[-•*]\s*|[""\']', '', line).strip()
             if cleaned:
                 keywords.append(cleaned)
@@ -669,14 +723,14 @@ Return ONLY the queries as a simple comma-separated list without numbering, quot
     
     # Ensure we have at least one keyword
     if not keywords:
-        keywords = [f"{topic} news"]
+        keywords = [f"viral {topic} trending", f"shocking {topic} news"]
     
     debug_log(f"Processed keywords: {keywords}")
     return keywords
 
 @handle_errors
-async def evaluate_articles_batch(articles, topic):
-    """Process multiple articles in a single GPT call"""
+async def evaluate_articles_batch(articles, topic, query):
+    """Process multiple articles with a focus on front-page, viral-worthy content and query matching"""
     if not articles:
         return []
     
@@ -698,46 +752,97 @@ async def evaluate_articles_batch(articles, topic):
             "snippet": content_snippet[:200] if content_snippet else "",
         })
     
-    # Build prompt for batch evaluation with age detection integrated
-    prompt = f"""Evaluate these news articles about "{topic}" and select the most relevant, unique, and recent ones.
+    # Build prompt for batch evaluation with critical stance and focus on query matching and specificness
+    prompt = f"""You are a SELECTIVE content critic evaluating news articles about "{topic}" that match the search query: "{query}".
+
+START by carefully evaluating how well each article matches the SPECIFIC search query: "{query}".
 
 ARTICLES:
 {json.dumps(articles_data, indent=2)}
 
-For each article, evaluate:
-1. Relevance to the topic (1-5 scale)
-2. If it appears to be reporting on an old story (published more than 24 hours ago)
-3. If it's a duplicate of another article in this batch
+For each article, evaluate with a critical eye:
+
+1. QUERY MATCH (1-5 scale): Does this PRECISELY address the specific search query "{query}"? This is the top priority.
+
+2. SPECIFICNESS (1-5 scale): Does the article mention SPECIFIC names, identifiers, or details? This is the second priority.
+   - High scoring (4-5): Contains exact names of people, places, specific products, organizations, or clearly named events
+   - Low scoring (1-2): Uses vague terms like "scientists", "researchers", "experts" without specific identities
+
+3. SUBSTANTIVENESS (1-5 scale): Does this contain meaningful, substantial content beyond clickbait?
+
+4. UNIQUENESS (1-5 scale): Is this truly novel information not widely reported elsewhere?
+
+5. FRONT-PAGE QUALITY (1-5 scale): Would a quality publication put this on their front page?
+
+6. VIRAL POTENTIAL (1-5 scale): Would people actually share this with others?
+
+REJECT if the article:
+- Is not directly addressing the specific search query "{query}"
+- Lacks specific named entities, people, products, events, etc. (too vague or general)
+- Is simply aggregating information available elsewhere
+- Has a misleading or over-sensationalized headline
+- Lacks authoritative sources or substantive content
+- Would not truly surprise or inform the reader
 
 Return ONLY a JSON array without any markdown formatting, with each entry containing:
 - id: The article ID
-- relevance_score: 1-5 rating
-- show_article: true/false
-- reason: Brief explanation of your decision
+- query_match: 1-5 rating (be strict on this!)
+- specificness: 1-5 rating (be strict - does it name specific entities/people/events?)
+- substantiveness: 1-5 rating
+- uniqueness: 1-5 rating
+- front_page_score: 1-5 rating
+- viral_potential: 1-5 rating
+- show_article: true/false (default to false)
+- reason: Explain specifically WHY this should be rejected OR approved (be specific)
 - is_old_news: true/false
-- story_cluster: A specific identifier for the exact news event
 
-Only include articles that are:
-- Relevant (score 3+)
-- Not duplicates of other articles
-- Not reporting on old news
+Only mark show_article as true if these criteria are met:
+1. query_match is at least 4
+2. specificness is at least 3
+3. substantiveness is at least 3
+4. uniqueness is at least 3
+5. front_page_score is at least 3
+6. viral_potential is at least 3
+
+Be selective - it's better to approve quality articles that truly match the query than to approve everything.
 """
 
-    system_role = "You are an expert news editor who selects front-page stories while filtering out duplicates and old news."
+    system_role = """You are a selective news critic with high standards.
+
+You carefully evaluate content for:
+- Relevance to the specific search query (highest priority)
+- Specificness - containing named entities, specific people, events, products, etc. (2nd highest priority)
+- Original reporting with unique insights
+- Substantive content that truly informs
+- Quality that would merit prominent placement in good publications
+- Genuine viral potential based on substance, not just clickbait
+
+You actively filter out:
+- Content that doesn't directly address the search query
+- Vague articles that don't mention specific names or identifiable entities
+- Aggregated content that simply recycles information
+- Clickbait or overblown headlines
+- Content that merely repackages existing knowledge
+
+Your default position is critical evaluation. Articles must demonstrate quality, specificity and relevance to earn your approval."""
     
     response = await ask_openai(prompt, system_role, temperature=0.3)
     
     if response == "OPENAI_ERROR":
         # Simple fallback evaluation
         default_approved = []
-        for i, article in enumerate(articles[:5]):  # Limit to top 5 in fallback mode
+        for i, article in enumerate(articles[:3]):  # Limit to top 3 in fallback mode
             default_approved.append({
                 "id": i,
-                "relevance_score": 3,
+                "query_match": 3,
+                "specificness": 3,
+                "substantiveness": 3,
+                "uniqueness": 3,
+                "front_page_score": 3,
+                "viral_potential": 3,
                 "show_article": True,
-                "reason": f"Article about {topic} (fallback evaluation)",
-                "is_old_news": False,
-                "story_cluster": topic
+                "reason": f"Article about {topic} that could go viral (fallback evaluation)",
+                "is_old_news": False
             })
         return process_evaluation_results(default_approved, articles)
         
@@ -750,7 +855,7 @@ Only include articles that are:
     return process_evaluation_results(result, articles)
 
 def process_evaluation_results(evaluation_results, articles):
-    """Process evaluation results and update article statuses"""
+    """Process evaluation results and update article statuses with viral/front-page focus"""
     approved_articles = []
     
     for result in evaluation_results:
@@ -762,7 +867,12 @@ def process_evaluation_results(evaluation_results, articles):
             article = articles[article_id]
             
             # Get evaluation details
-            relevance_score = result.get("relevance_score", 0)
+            query_match = result.get("query_match", 0)
+            specificness = result.get("specificness", 0)
+            substantiveness = result.get("substantiveness", 0)
+            uniqueness = result.get("uniqueness", 0)
+            front_page_score = result.get("front_page_score", 0)
+            viral_potential = result.get("viral_potential", 0)
             show_article = result.get("show_article", False)
             reason = result.get("reason", "No reason provided")
             is_old_news = result.get("is_old_news", False)
@@ -776,6 +886,9 @@ def process_evaluation_results(evaluation_results, articles):
             # Add analysis to article
             article["analysis"] = result
             
+            # Create a detailed score display
+            score_display = f"[QM:{query_match}/5 | SP:{specificness}/5 | S:{substantiveness}/5 | U:{uniqueness}/5 | FP:{front_page_score}/5 | V:{viral_potential}/5]"
+            
             # Update article status based on evaluation
             if is_old_news:
                 # Old news
@@ -788,28 +901,46 @@ def process_evaluation_results(evaluation_results, articles):
                         art['status'] = 'OLD_NEWS'
                         art['reason'] = reason
                         break
-            elif not show_article and relevance_score < 3:
-                # Low relevance
+            elif not show_article or query_match < 4 or specificness < 3:
+                # Low query match, specificness, viral potential or front-page quality
                 ARTICLE_STATS['low_relevance'] += 1
-                print(f"{EMOJI['rejected']} LOW RELEVANCE: {article.get('title', '')[:70]}... [Score: {relevance_score}/5] - {reason}")
+                print(f"{EMOJI['rejected']} LOW RELEVANCE/QUALITY: {article.get('title', '')[:70]}... {score_display} - {reason}")
                 
                 # Update article status
                 for art in ARTICLE_STATS['articles']:
                     if art.get('title') == article.get('title', '') and art.get('status') == 'DISCOVERED':
                         art['status'] = 'LOW_RELEVANCE'
-                        art['score'] = relevance_score
+                        art['score'] = front_page_score
+                        art['query_match'] = query_match
+                        art['specificness'] = specificness
+                        art['substantiveness'] = substantiveness
+                        art['uniqueness'] = uniqueness
                         art['reason'] = reason
                         break
             else:
+                # Skip if URL is already in the processed set
+                url = article.get("url", "")
+                if url in PROCESSED_URLS:
+                    print(f"{EMOJI['duplicate']} DUPLICATE URL: {article.get('title', '')[:70]}...")
+                    continue
+                
+                # Add URL to processed set
+                PROCESSED_URLS.add(url)
+                
                 # Approved article
                 ARTICLE_STATS['approved'] += 1
-                print(f"{EMOJI['approved']} APPROVED: {article.get('title', '')[:70]}... [Score: {relevance_score}/5] - {reason}")
+                print(f"{EMOJI['approved']} APPROVED: {article.get('title', '')[:70]}... {score_display} - {reason}")
                 
                 # Update article status
                 for art in ARTICLE_STATS['articles']:
                     if art.get('title') == article.get('title', '') and art.get('status') == 'DISCOVERED':
                         art['status'] = 'APPROVED'
-                        art['score'] = relevance_score
+                        art['score'] = front_page_score
+                        art['query_match'] = query_match
+                        art['specificness'] = specificness
+                        art['substantiveness'] = substantiveness
+                        art['uniqueness'] = uniqueness
+                        art['viral_potential'] = viral_potential
                         art['reason'] = reason
                         break
                 
@@ -845,13 +976,22 @@ async def process_search_results(search_results, topic):
     
     print(f"Found {len(unique_articles)} unique articles after URL deduplication")
     
+    # Filter out global duplicates by URL before content fetching
+    filtered_articles = []
+    for article in unique_articles:
+        url = article.get("url", "")
+        if url and url not in PROCESSED_URLS:
+            filtered_articles.append(article)
+    
+    print(f"Found {len(filtered_articles)} articles after filtering already processed URLs")
+    
     # Fetch content for articles in batches
     enriched_articles = []
     
     # Process in batches of 5 to limit concurrency
     batch_size = 5
-    for i in range(0, len(unique_articles), batch_size):
-        batch = unique_articles[i:i+batch_size]
+    for i in range(0, len(filtered_articles), batch_size):
+        batch = filtered_articles[i:i+batch_size]
         fetch_tasks = []
         
         for article in batch:
@@ -873,8 +1013,19 @@ async def process_search_results(search_results, topic):
     eval_batch_size = 10
     for i in range(0, len(enriched_articles), eval_batch_size):
         batch = enriched_articles[i:i+eval_batch_size]
-        approved_batch = await evaluate_articles_batch(batch, topic)
-        all_approved.extend(approved_batch)
+        
+        # Group articles by their original search query
+        query_groups = {}
+        for article in batch:
+            query = article.get("query", topic)  # Default to topic if query not available
+            if query not in query_groups:
+                query_groups[query] = []
+            query_groups[query].append(article)
+        
+        # Evaluate each query group separately
+        for query, articles_group in query_groups.items():
+            approved_batch = await evaluate_articles_batch(articles_group, topic, query)
+            all_approved.extend(approved_batch)
     
     return all_approved
 
@@ -882,12 +1033,26 @@ async def process_search_results(search_results, topic):
 async def find_and_send_news(topic: str, exclusions: list = None, 
                              send_callback: Callable = None, sent_ids: Set[str] = None) -> List[Dict]:
     """Find and send news with optimized processing"""
+    global USED_KEYWORDS
+    
     # Initialize sent_ids if not provided
     if sent_ids is None:
         sent_ids = set()
         
-    # Generate search keywords
-    keywords = await generate_keywords_batch(topic)
+    # Initialize used keywords for this topic if not already done
+    if topic not in USED_KEYWORDS:
+        USED_KEYWORDS[topic] = []
+    
+    # Generate search keywords, passing previously used keywords
+    keywords = await generate_keywords_batch(topic, USED_KEYWORDS[topic])
+    
+    # Store the newly generated keywords
+    USED_KEYWORDS[topic].extend(keywords)
+    
+    # Keep only the last 20 keywords to avoid unbounded growth
+    max_keywords_to_store = 20
+    if len(USED_KEYWORDS[topic]) > max_keywords_to_store:
+        USED_KEYWORDS[topic] = USED_KEYWORDS[topic][-max_keywords_to_store:]
     
     print(f"\n🔍 ======== SEARCHING for '{topic}' ======== 🔍\n")
     
@@ -980,10 +1145,21 @@ async def create_article_buttons(article):
 
 @handle_errors
 async def send_article_to_user(article: Dict, chat_id: int, context: ContextTypes.DEFAULT_TYPE):
-    """Send an article to a user with rate limiting to avoid flood control"""
+    """Send an article to a user with enhanced front-page qualities explanation"""
     try:
         # Format the message text
         text = f"*{article['title']}*\n\n"
+        
+        # Add viral metrics if available
+        if 'analysis' in article and article['analysis']:
+            analysis = article['analysis']
+            if all(k in analysis for k in ['query_match', 'specificness', 'substantiveness', 'uniqueness', 'front_page_score', 'viral_potential']):
+                text += f"🎯 *Query Match:* {analysis['query_match']}/5\n"
+                text += f"🔍 *Specificness:* {analysis['specificness']}/5\n"
+                text += f"📚 *Substantiveness:* {analysis['substantiveness']}/5\n"
+                text += f"⭐ *Uniqueness:* {analysis['uniqueness']}/5\n"
+                text += f"📊 *Front Page Score:* {analysis['front_page_score']}/5\n"
+                text += f"🚀 *Viral Potential:* {analysis['viral_potential']}/5\n\n"
         
         # Add explanation/summary if available
         if 'analysis' in article and article['analysis'] and 'reason' in article['analysis']:
@@ -1174,7 +1350,7 @@ async def stop_timeout(context: ContextTypes.DEFAULT_TYPE):
         )
 
 async def graceful_shutdown():
-    """Perform a graceful shutdown of all async tasks"""
+    """Perform a graceful shutdown of all async tasks with proper cleanup"""
     global SHUTDOWN_FLAG
     SHUTDOWN_FLAG = True
     
@@ -1183,10 +1359,35 @@ async def graceful_shutdown():
     await asyncio.sleep(2)
     
     try:
-        # Get the event loop
-        loop = asyncio.get_running_loop()
+        # Use the application's proper shutdown method if available
+        global APP_INSTANCE
+        if APP_INSTANCE:
+            print("Using application's built-in shutdown method...")
+            try:
+                # First stop the updater (if running)
+                if hasattr(APP_INSTANCE, 'updater') and APP_INSTANCE.updater.running:
+                    print("Stopping updater...")
+                    await APP_INSTANCE.updater.stop()
+                    
+                # Then stop the application
+                if APP_INSTANCE.running:
+                    print("Stopping application...")
+                    await APP_INSTANCE.stop()
+                
+                # Finally, shutdown the application
+                print("Shutting down application...")
+                await APP_INSTANCE.shutdown()
+                
+                print("Application shutdown completed successfully.")
+                return
+            except Exception as e:
+                print(f"Error during application shutdown: {e}")
+                print("Continuing with manual shutdown process...")
+            
+        # Fallback to manual task cancellation
+        print("Using manual shutdown process...")
         
-        # Cancel all tasks except the current one
+        # Get all running tasks except the current one
         tasks = [t for t in asyncio.all_tasks() if t is not asyncio.current_task()]
         
         # Log number of tasks being canceled
@@ -1212,15 +1413,10 @@ async def graceful_shutdown():
     except Exception as e:
         print(f"Error during shutdown: {e}")
     
-    # Stop the event loop
-    try:
-        loop = asyncio.get_running_loop()
-        loop.stop()
-    except Exception as e:
-        print(f"Error stopping event loop: {e}")
-        # Last resort is to exit the process
-        import sys
-        sys.exit(0)
+    # Do NOT call sys.exit() directly - let the main function handle this
+    # The proper way is to return from this function and let the main
+    # flow terminate naturally
+    print("Shutdown process complete.")
 
 ###########################################
 # Command Handlers
@@ -1237,6 +1433,7 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "/setexclusions <terms> - Set terms to exclude\n"
         "/clearexclusions - Clear all exclusions\n"
         "/msntoggle - Toggle MSN results on/off\n"
+        "/export - Export approved articles to file\n"
         "/help - Show this help message"
     )
     await update.message.reply_text(guide)
@@ -1288,23 +1485,35 @@ async def search_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.chat_data["timeout_job"] = timeout_job
 
 async def stop_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handle /stop command to completely terminate the bot"""
+    """Handle /stop command to gracefully terminate the bot"""
     # Reset access-restricted domains
     global ACCESS_RESTRICTED_DOMAINS
     ACCESS_RESTRICTED_DOMAINS = {}
     
     # First reply to the user
-    await update.message.reply_text("Stopping the bot completely. Goodbye!")
+    await update.message.reply_text("Stopping the news feed. Exporting approved articles...")
     
     # Cancel any scheduled jobs
     if "job" in context.chat_data:
-        context.chat_data.pop("job").schedule_removal()
+        job = context.chat_data.pop("job")
+        job.schedule_removal()
         
     if "timeout_job" in context.chat_data:
-        context.chat_data.pop("timeout_job").schedule_removal()
+        timeout_job = context.chat_data.pop("timeout_job")
+        timeout_job.schedule_removal()
     
-    # Schedule a graceful shutdown after this handler completes
-    asyncio.create_task(graceful_shutdown())
+    # Export approved articles before shutting down
+    write_approved_articles_to_file()
+    
+    # Let the user know we're done
+    await update.message.reply_text("Jobs stopped and articles exported. Type /search to start again.")
+    
+    # For actual bot termination, uncomment this:
+    # # Set shutdown flag to prevent new operations
+    # global SHUTDOWN_FLAG
+    # SHUTDOWN_FLAG = True
+    # # Schedule a graceful shutdown after this handler completes
+    # asyncio.create_task(graceful_shutdown())
 
 async def favorite_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handle /favorite command to show favorite articles"""
@@ -1372,6 +1581,13 @@ async def debug_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     status = "enabled" if DEBUG_MODE else "disabled"
     await update.message.reply_text(f"Debug mode {status}.")
 
+async def export_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle /export command to export approved articles to a file"""
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    filename = f"approved_articles_{timestamp}.txt"
+    write_approved_articles_to_file(filename)
+    await update.message.reply_text(f"Exported approved articles to {filename}")
+
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handle /help command"""
     guide = (
@@ -1381,7 +1597,8 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "/stop - Stop the current search\n"
         "/favorite - View your favorite articles\n"
         "/clearexclusions - Clear all exclusions\n"
-        "/msntoggle - Toggle MSN results on/off\n\n"
+        "/msntoggle - Toggle MSN results on/off\n"
+        "/export - Export approved articles to file\n\n"
         "*Article Interactions:*\n"
         "⭐ Favorite - Save an article to your favorites\n"
         "🗑️ Trash - Remove an article from view\n"
@@ -1394,8 +1611,10 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 ###########################################
 
 def main():
-    """Start the bot"""
+    """Start the bot with improved shutdown handling"""
+    global APP_INSTANCE
     app = ApplicationBuilder().token(BOT_TOKEN).build()
+    APP_INSTANCE = app
     
     # Add command handlers
     app.add_handler(CommandHandler("start", start_command))
@@ -1407,6 +1626,7 @@ def main():
     app.add_handler(CommandHandler("msntoggle", msntoggle_command))
     app.add_handler(CommandHandler("favorite", favorite_command))
     app.add_handler(CommandHandler("debug", debug_command))
+    app.add_handler(CommandHandler("export", export_command))
     
     # Add callback handler
     app.add_handler(CallbackQueryHandler(feedback_callback, pattern=r"^(favorite|trash):"))
@@ -1415,7 +1635,7 @@ def main():
     print("News Bot started")
     
     # Improved error handler to suppress all errors during shutdown
-    def error_handler(update, context):
+    async def error_handler(update, context):
         if SHUTDOWN_FLAG:
             # Suppress errors during shutdown
             return
@@ -1424,7 +1644,40 @@ def main():
     
     app.add_error_handler(error_handler)
     
-    app.run_polling()
+    try:
+        # Run the application
+        app.run_polling(allowed_updates=Update.ALL_TYPES, close_loop=False)
+    except KeyboardInterrupt:
+        print("KeyboardInterrupt received, shutting down...")
+        # Write approved articles before shutdown
+        write_approved_articles_to_file()
+        # Use run_until_complete instead of asyncio.run to avoid "Event loop is closed" errors
+        loop = asyncio.get_event_loop()
+        if loop.is_running():
+            # If we're in a running loop, create a task
+            loop.create_task(graceful_shutdown())
+        else:
+            # Otherwise run the shutdown directly
+            loop.run_until_complete(graceful_shutdown())
+    except Exception as e:
+        print(f"Error in main loop: {e}")
+        # Still try to write articles even if there's an error
+        write_approved_articles_to_file()
+        # Same as above for graceful shutdown
+        try:
+            loop = asyncio.get_event_loop()
+            if loop.is_running():
+                loop.create_task(graceful_shutdown())
+            else:
+                loop.run_until_complete(graceful_shutdown())
+        except Exception as shutdown_error:
+            print(f"Error during emergency shutdown: {shutdown_error}")
+            # If all else fails, force exit
+            import sys
+            sys.exit(1)
+
+    # Allow the program to exit naturally after the main function returns
+    print("Main function complete, exiting normally.")
 
 if __name__ == "__main__":
     main()
