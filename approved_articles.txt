@@ -1,0 +1,83 @@
+# Approved Articles Analysis
+
+This file contains details of all articles that were approved by the news bot's evaluation system.
+Use this to identify and correct false positives in the article selection process.
+
+## Approved Articles
+
+### Article 1
+**Title**: Caught On Cam: From Yelling To Arguing, Apoorva Mukhija Gets Accused Of Creating Ruckus At Sabrina Carpenter's Concert In Paris
+**Source**: 
+**Date**: 
+**URL**: https://www.newsx.com/entertainment/caught-on-cam-from-yelling-to-arguing-apoorva-mukhija-gets-accused-of-creating-ruckus-at-sabrina-carpenters-concert-in-paris/
+**Search Query**: Breaking news viral controversy
+
+**Viral Metrics**:
+- Query Match Score: 4/5
+- Specificness Score: 4/5
+- Substantiveness: 4/5
+- Uniqueness: 3/5
+- Front Page Score: 4/5
+- Viral Potential: 4/5
+
+**Approval Reasoning**: This article precisely addresses the search query by discussing a viral controversy involving Apoorva Mukhija at Sabrina Carpenter's concert. It features specific named entities like Apoorva Mukhija and Sabrina Carpenter, providing substantial details and potential for virality.
+
+---
+
+### Article 2
+**Title**: Raza Murad, Kiran Kumar respond to backlash over drinking during Ramzan in viral video: 'This is a clip from a movie...'
+**Source**: 
+**Date**: 
+**URL**: https://www.moneycontrol.com/entertainment/raza-murad-kiran-kumar-respond-to-backlash-over-drinking-during-ramzan-in-viral-video-this-is-a-clip-from-a-movie-article-12969606.html
+**Search Query**: Breaking news viral controversy
+
+**Viral Metrics**:
+- Query Match Score: 4/5
+- Specificness Score: 4/5
+- Substantiveness: 4/5
+- Uniqueness: 4/5
+- Front Page Score: 4/5
+- Viral Potential: 4/5
+
+**Approval Reasoning**: This article directly addresses a viral controversy involving Raza Murad and Kiran Kumar. It features specific named entities and provides substantial details with a unique perspective, making it suitable for front-page placement and potential virality.
+
+---
+
+### Article 3
+**Title**: How Dublin school was plunged into acrimony by claims one of its teachers was behind infamous 'GAA Catfish' controversy
+**Source**: 
+**Date**: 
+**URL**: https://www.independent.ie/irish-news/how-dublin-school-was-plunged-into-acrimony-by-claims-one-of-its-teachers-was-behind-infamous-gaa-catfish-controversy/a1231356744.html
+**Search Query**: Breaking news viral controversy
+
+**Viral Metrics**:
+- Query Match Score: 5/5
+- Specificness Score: 5/5
+- Substantiveness: 4/5
+- Uniqueness: 4/5
+- Front Page Score: 4/5
+- Viral Potential: 4/5
+
+**Approval Reasoning**: This article precisely addresses the search query by discussing a viral controversy surrounding a teacher at a Dublin school. It features a specific named entity 'Niamh Farrell' at the center of the controversy. The content is substantive, unique, and of front-page quality with genuine viral potential.
+
+---
+
+### Article 4
+**Title**: Sarah Kim's husband Andrew Min goes viral for all the wrong reasons—fans slam his parenting, finances, and behavior
+**Source**: 
+**Date**: 
+**URL**: https://tribune.com.pk/story/2535386/sarah-kim-husband-andrew-min-goes-viral-for-all-the-wrong-reasonsfans
+**Search Query**: Breaking news viral controversy
+
+**Viral Metrics**:
+- Query Match Score: 4/5
+- Specificness Score: 5/5
+- Substantiveness: 4/5
+- Uniqueness: 4/5
+- Front Page Score: 4/5
+- Viral Potential: 4/5
+
+**Approval Reasoning**: This article directly addresses a viral controversy involving Sarah Kim's husband, Andrew Min, with specific details about his parenting, finances, and behavior. It features a named entity 'Andrew Min' at the center of the controversy. The content is substantive, unique, and of front-page quality with genuine viral potential.
+
+---
+

@@ -303,7 +303,7 @@ async def search_news(query: str, max_results: int = 30, timelimit: str = "d") -
             from duckduckgo_search import DDGS
             with DDGS() as ddgs:
                 results = list(ddgs.news(
-                    query_text, region="wt-wt", safesearch="Off", 
+                    query_text, region="us-en", safesearch="Off", 
                     timelimit=timelimit, max_results=max_results
                 ))
                 
@@ -752,7 +752,7 @@ async def evaluate_articles_batch(articles, topic, query):
             "snippet": content_snippet[:200] if content_snippet else "",
         })
     
-    # Build prompt for batch evaluation with critical stance and focus on query matching and specificness
+    # Build prompt for batch evaluation with critical stance and focus on query matching and central named entities
     prompt = f"""You are a SELECTIVE content critic evaluating news articles about "{topic}" that match the search query: "{query}".
 
 START by carefully evaluating how well each article matches the SPECIFIC search query: "{query}".
@@ -764,21 +764,22 @@ For each article, evaluate with a critical eye:
 
 1. QUERY MATCH (1-5 scale): Does this PRECISELY address the specific search query "{query}"? This is the top priority.
 
-2. SPECIFICNESS (1-5 scale): Does the article mention SPECIFIC names, identifiers, or details? This is the second priority.
-   - High scoring (4-5): Contains exact names of people, places, specific products, organizations, or clearly named events
-   - Low scoring (1-2): Uses vague terms like "scientists", "researchers", "experts" without specific identities
+2. SPECIFICNESS (1-5 scale): Does the article feature a SPECIFIC NAMED entity with a PROPER NAME? This is the second priority.
+   - High scoring (4-5): Features entities with actual proper names (e.g., "Helix the cat", "Operation Lazarus Gate", "CEO Jane Smith", "Hurricane Katrina")
+   - Medium scoring (3): Mentions named organizations or locations but no central named character/entity
+   - Low scoring (1-2): Only uses general categories, species names, or types without proper names (e.g., "a firefighter", "snow leopards", "polar bears", "Fijian iguanas")
 
 3. SUBSTANTIVENESS (1-5 scale): Does this contain meaningful, substantial content beyond clickbait?
 
-4. UNIQUENESS (1-5 scale): Is this truly novel information not widely reported elsewhere?
+4. UNIQUENESS (1-5 scale): Is this truly novel information that has recently occured?
 
-5. FRONT-PAGE QUALITY (1-5 scale): Would a quality publication put this on their front page?
+5. FRONT-PAGE QUALITY (1-5 scale): Would a popular publication, newspaper, tabloid, or online website put this on their front page?
 
-6. VIRAL POTENTIAL (1-5 scale): Would people actually share this with others?
+6. VIRAL POTENTIAL (1-5 scale): Is this the type of content people want to share with their friends?
 
 REJECT if the article:
 - Is not directly addressing the specific search query "{query}"
-- Lacks specific named entities, people, products, events, etc. (too vague or general)
+- Lacks a specific entity with a proper name (general categories, species names, or types like "polar bears" or "iguanas" are NOT sufficient - entities must have actual proper names like "Nanook the polar bear" or "Operation Iguana Rescue")
 - Is simply aggregating information available elsewhere
 - Has a misleading or over-sensationalized headline
 - Lacks authoritative sources or substantive content
@@ -787,7 +788,7 @@ REJECT if the article:
 Return ONLY a JSON array without any markdown formatting, with each entry containing:
 - id: The article ID
 - query_match: 1-5 rating (be strict on this!)
-- specificness: 1-5 rating (be strict - does it name specific entities/people/events?)
+- specificness: 1-5 rating (be strict - does it have a CENTRAL NAMED entity?)
 - substantiveness: 1-5 rating
 - uniqueness: 1-5 rating
 - front_page_score: 1-5 rating
@@ -798,20 +799,20 @@ Return ONLY a JSON array without any markdown formatting, with each entry contai
 
 Only mark show_article as true if these criteria are met:
 1. query_match is at least 4
-2. specificness is at least 3
+2. specificness is at least 4 (MUST have a specific entity with a PROPER NAME - species names, categories, or types without proper names are NOT sufficient)
 3. substantiveness is at least 3
 4. uniqueness is at least 3
 5. front_page_score is at least 3
 6. viral_potential is at least 3
 
-Be selective - it's better to approve quality articles that truly match the query than to approve everything.
+Be selective - it's better to approve quality articles with entities that have proper names that truly match the query than to approve everything. REMEMBER: "Snow leopards," "Fijian iguanas," or "polar bears" are NOT sufficient - you need "Snowflake the snow leopard," "Operation Iguana Rescue," or "Boris the polar bear" for a high specificness score.
 """
 
     system_role = """You are a selective news critic with high standards.
 
 You carefully evaluate content for:
 - Relevance to the specific search query (highest priority)
-- Specificness - containing named entities, specific people, events, products, etc. (2nd highest priority)
+- Presence of a PROPERLY NAMED entity - a specific individual, event, product, or organization with an actual proper name (2nd highest priority). A species name, general category, or type (like "snow leopards" or "Fijian iguanas") is NOT sufficient - it must have a specific proper name.
 - Original reporting with unique insights
 - Substantive content that truly informs
 - Quality that would merit prominent placement in good publications
@@ -819,12 +820,12 @@ You carefully evaluate content for:
 
 You actively filter out:
 - Content that doesn't directly address the search query
-- Vague articles that don't mention specific names or identifiable entities
+- Articles without entities that have specific proper names (generic stories, species classifications, or general categories without named individuals or events)
 - Aggregated content that simply recycles information
 - Clickbait or overblown headlines
 - Content that merely repackages existing knowledge
 
-Your default position is critical evaluation. Articles must demonstrate quality, specificity and relevance to earn your approval."""
+Your default position is critical evaluation. Articles must demonstrate quality, have entities with specific proper names (not just categories or species), and show relevance to earn your approval."""
     
     response = await ask_openai(prompt, system_role, temperature=0.3)
     
@@ -901,7 +902,7 @@ def process_evaluation_results(evaluation_results, articles):
                         art['status'] = 'OLD_NEWS'
                         art['reason'] = reason
                         break
-            elif not show_article or query_match < 4 or specificness < 3:
+            elif not show_article or query_match < 4 or specificness < 4:  # Increased specificness requirement from 3 to 4
                 # Low query match, specificness, viral potential or front-page quality
                 ARTICLE_STATS['low_relevance'] += 1
                 print(f"{EMOJI['rejected']} LOW RELEVANCE/QUALITY: {article.get('title', '')[:70]}... {score_display} - {reason}")
